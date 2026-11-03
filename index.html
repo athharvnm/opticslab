@@ -292,7 +292,6 @@
                 } else if (this.type === 'screen') {
                     this.width = 180;
                     this.height = 16;
-                    this.angle = Math.PI / 2; // Positioned vertically (90 deg) across rays by default
                 } else if (this.type === 'ruler') {
                     this.width = 250;
                     this.height = 30;
@@ -373,7 +372,16 @@
                 const localX = dx * Math.cos(-el.angle) - dy * Math.sin(-el.angle);
                 const localY = dx * Math.sin(-el.angle) + dy * Math.cos(-el.angle);
 
-                if (Math.abs(localX) <= el.width / 2 + 10 && Math.abs(localY) <= (el.height || 20) / 2 + 10) {
+                let hitW = el.width;
+                let hitH = el.height || 20;
+
+                // Transpose hit detection boundaries for vertical screen
+                if (el.type === 'screen') {
+                    hitW = el.height || 16;
+                    hitH = el.width;
+                }
+
+                if (Math.abs(localX) <= hitW / 2 + 10 && Math.abs(localY) <= hitH / 2 + 10) {
                     found = el;
                     break;
                 }
@@ -439,7 +447,7 @@
         });
 
         function getRotationHandlePos(el) {
-            const offset = el.width / 2 + 25;
+            const offset = (el.type === 'screen' ? el.height : el.width) / 2 + 25;
             return {
                 x: el.x + Math.cos(el.angle) * offset,
                 y: el.y + Math.sin(el.angle) * offset
@@ -778,7 +786,7 @@
             const lrx2 = (rx2 - el.x) * cos - (ry2 - el.y) * sin;
             const lry2 = (rx2 - el.x) * sin + (ry2 - el.y) * cos;
 
-            if (el.type === 'plane-mirror' || el.type === 'screen') {
+            if (el.type === 'plane-mirror') {
                 const hit = lineIntersection(lrx1, lry1, lrx2, lry2, -el.width / 2, 0, el.width / 2, 0);
                 if (hit) {
                     const worldX = el.x + hit.x * Math.cos(rad) - hit.y * Math.sin(rad);
@@ -786,6 +794,16 @@
                     let nx = -Math.sin(rad);
                     let ny = Math.cos(rad);
                     return { x: worldX, y: worldY, normalX: nx, normalY: ny, localHitX: hit.x };
+                }
+            } else if (el.type === 'screen') {
+                // Vertical screen line along local Y axis
+                const hit = lineIntersection(lrx1, lry1, lrx2, lry2, 0, -el.width / 2, 0, el.width / 2);
+                if (hit) {
+                    const worldX = el.x + hit.x * Math.cos(rad) - hit.y * Math.sin(rad);
+                    const worldY = el.y + hit.x * Math.sin(rad) + hit.y * Math.cos(rad);
+                    let nx = Math.cos(rad);
+                    let ny = Math.sin(rad);
+                    return { x: worldX, y: worldY, normalX: nx, normalY: ny, localHitY: hit.y };
                 }
             } else if (el.type === 'glass-slab') {
                 const hw = el.width / 2;
@@ -1109,16 +1127,21 @@
                     ctx.fillText(`n = ${el.refractiveIndex.toFixed(2)}`, 0, 4);
 
                 } else if (el.type === 'screen') {
+                    // Rendered standing vertically along local Y-axis
+                    const screenThickness = el.height || 16;
                     ctx.fillStyle = '#334155';
-                    ctx.fillRect(-el.width/2, -el.height/2, el.width, el.height);
+                    ctx.fillRect(-screenThickness/2, -el.width/2, screenThickness, el.width);
                     ctx.strokeStyle = isSelected ? '#c084fc' : '#a855f7';
                     ctx.lineWidth = 2;
-                    ctx.strokeRect(-el.width/2, -el.height/2, el.width, el.height);
+                    ctx.strokeRect(-screenThickness/2, -el.width/2, screenThickness, el.width);
 
+                    ctx.save();
+                    ctx.rotate(-Math.PI / 2);
                     ctx.fillStyle = '#e9d5ff';
                     ctx.font = '10px Inter';
                     ctx.textAlign = 'center';
                     ctx.fillText('SCREEN', 0, 3);
+                    ctx.restore();
 
                 } else if (el.type === 'ruler') {
                     ctx.fillStyle = 'rgba(251, 191, 36, 0.2)';
@@ -1147,21 +1170,29 @@
                 }
 
                 if (isSelected) {
+                    let selectW = el.width;
+                    let selectH = el.height || 20;
+
+                    if (el.type === 'screen') {
+                        selectW = el.height || 16;
+                        selectH = el.width;
+                    }
+
                     ctx.strokeStyle = '#38bdf8';
                     ctx.setLineDash([3, 3]);
                     ctx.lineWidth = 1;
-                    ctx.strokeRect(-el.width/2 - 8, -(el.height || 20)/2 - 8, el.width + 16, (el.height || 20) + 16);
+                    ctx.strokeRect(-selectW/2 - 8, -selectH/2 - 8, selectW + 16, selectH + 16);
                     ctx.setLineDash([]);
 
-                    const localHX = el.width/2 + 25;
+                    const handleOffset = (el.type === 'screen' ? el.height : el.width)/2 + 25;
                     ctx.fillStyle = '#38bdf8';
                     ctx.beginPath();
-                    ctx.arc(localHX, 0, 6, 0, Math.PI * 2);
+                    ctx.arc(handleOffset, 0, 6, 0, Math.PI * 2);
                     ctx.fill();
 
                     ctx.beginPath();
-                    ctx.moveTo(el.width/2 + 8, 0);
-                    ctx.lineTo(localHX, 0);
+                    ctx.moveTo(selectW/2 + 8, 0);
+                    ctx.lineTo(handleOffset, 0);
                     ctx.strokeStyle = '#38bdf8';
                     ctx.stroke();
                 }
