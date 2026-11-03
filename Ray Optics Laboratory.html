@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Ray Optics Laboratory</title>
+<script src="https://cdn.tailwindcss.com/3.4.17"></script>
+<link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root{color-scheme:dark;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+html,body{height:100%;margin:0}
+body{font-family:Inter,system-ui,sans-serif;background:#0b0f19;color:#e2e8f0;overflow:hidden;user-select:none}
+canvas{display:block;touch-action:none}
+input[type=range]{accent-color:#22d3ee;width:100%}
+select.tb{appearance:auto}
+.tb{padding:.3rem .6rem;border-radius:.4rem;background:#1e293b;border:1px solid #334155;color:#cbd5e1;cursor:pointer;font-size:12px}
+.tb:hover{background:#334155}.tb.on{color:#22d3ee;border-color:#0e7490}.tb.red{color:#fda4af;border-color:#9f1239}
+.pb{display:flex;flex-direction:column;align-items:center;gap:2px;padding:6px 4px;border:1px solid #334155;border-radius:.5rem;background:#1e293b;font-size:11px;cursor:pointer;color:#cbd5e1;min-width:70px}
+.pb:hover{border-color:#22d3ee;color:#fff}
+.pb svg{width:26px;height:26px;stroke:currentColor;fill:none;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
+.mono{font-family:'Fira Code',ui-monospace,monospace}
+</style>
+</head>
+<body class="flex flex-col">
+<header class="shrink-0 flex flex-wrap items-center justify-between gap-2 px-3 py-2 bg-slate-900 border-b border-slate-800 text-xs">
+  <h1 class="font-semibold text-base text-cyan-300">Ray Optics Laboratory</h1>
+  <div class="flex flex-wrap items-center gap-1.5">
+    <button id="b-grid" class="tb on">Grid snap: on</button>
+    <button id="b-norm" class="tb">Normals: off</button>
+    <button id="b-virt" class="tb on">Virtual rays: on</button>
+    <select id="preset" class="tb" title="Load an experiment">
+      <option value="">Experiments…</option>
+      <option value="lens">Convex lens focusing</option>
+      <option value="slab">Refraction through glass</option>
+      <option value="concave">Concave mirror</option>
+      <option value="convex">Convex mirror</option>
+      <option value="periscope">Periscope (two plane mirrors)</option>
+    </select>
+    <button id="b-clear" class="tb red">Clear</button>
+  </div>
+  <label class="flex items-center gap-2 text-slate-400">Ray density
+    <input type="range" id="dens" min="1" max="61" step="2" value="15" class="w-24"><span id="denslbl" class="mono text-cyan-300 w-6">15</span>
+  </label>
+</header>
+
+<div class="flex flex-1 min-h-0 flex-col md:flex-row">
+  <aside id="palette" class="shrink-0 md:w-56 max-h-40 md:max-h-none overflow-y-auto bg-slate-900/90 border-b md:border-b-0 md:border-r border-slate-800 p-3 space-y-2"></aside>
+  <main id="stage" class="relative flex-1 min-h-0 min-w-0">
+    <canvas id="cv"></canvas>
+    <div class="absolute top-3 left-3 bg-slate-900/80 border border-slate-700 rounded-lg p-2 text-xs mono pointer-events-none space-y-0.5">
+      <div>Ray segments <span id="s-rays" class="text-emerald-400">0</span></div>
+      <div>Interactions <span id="s-hits" class="text-amber-400">0</span></div>
+      <div>FPS <span id="s-fps" class="text-cyan-400">60</span></div>
+    </div>
+    <div class="absolute bottom-3 left-3 right-3 text-[11px] text-slate-500 pointer-events-none">Drag to move · drag the round handle to rotate (Shift snaps to 15°) · Delete removes · light enters every mirror and screen from the left at 0°</div>
+  </main>
+  <aside id="insp" class="shrink-0 md:w-72 max-h-44 md:max-h-none overflow-y-auto bg-slate-900/90 border-t md:border-t-0 md:border-l border-slate-800 p-3 space-y-3 text-xs"></aside>
+</div>
+
+<script>
+const TAU=Math.PI*2,$=id=>document.getElementById(id);
+const cv=$('cv'),ctx=cv.getContext('2d'),stage=$('stage');
+let W=0,H=0,dpr=1,els=[],sel=null,drag=null,showGrid=true,showN=false,showV=true,density=15,fc=0,lt=performance.now();
+
+/* ---- Convention: every element lives in a local frame. Optical axis = local +x, aperture runs along local y.
+   Angle 0 = upright element. Mirrors and screens present their working face to local -x (light arrives from the left). ---- */
+const DEF={laser:{size:80},'point-light':{color:'#ffb703'},'plane-mirror':{size:160},'concave-mirror':{size:160,f:150},'convex-mirror':{size:160,f:-150},
+ 'convex-lens':{size:180,f:150},'concave-lens':{size:180,f:-150},'glass-slab':{size:140,depth:120},screen:{size:200},ruler:{size:250}};
+const LABEL={laser:'Parallel beam','point-light':'Point source','plane-mirror':'Plane mirror','concave-mirror':'Concave mirror','convex-mirror':'Convex mirror',
+ 'convex-lens':'Convex lens','concave-lens':'Concave lens','glass-slab':'Glass block',screen:'Screen',ruler:'Ruler'};
+class El{constructor(t,x,y){this.id=Math.random().toString(36).slice(2,9);this.type=t;this.x=x;this.y=y;this.angle=0;
+ Object.assign(this,{size:160,depth:120,f:150,n:1.5,spread:40,count:density,color:'#00ffcc',hits:[]},DEF[t]||{});}}
+const isSrc=e=>e.type==='laser'||e.type==='point-light';
+const curved=e=>e.type==='concave-mirror'||e.type==='convex-mirror';
+const isLens=e=>e.type==='convex-lens'||e.type==='concave-lens';
+const sag=(R,y)=>R-Math.sqrt(Math.max(R*R-y*y,0));
+const lensR=e=>Math.max(2*(e.n-1)*Math.abs(e.f),e.size*.56);   // lensmaker, equiconvex: R = 2(n-1)f
+const mirHW=e=>Math.min(e.size/2,Math.abs(2*e.f)*.98);
+const g=v=>Math.round(v/20)*20;
+function bounds(e){switch(e.type){
+ case'laser':return{hx:22,hy:Math.max(15,e.size/2)};case'point-light':return{hx:16,hy:16};
+ case'glass-slab':return{hx:e.depth/2,hy:e.size/2};case'ruler':return{hx:e.size/2,hy:16};
+ case'convex-lens':case'concave-lens':return{hx:sag(lensR(e),e.size/2)+4,hy:e.size/2};
+ case'concave-mirror':case'convex-mirror':return{hx:sag(Math.abs(2*e.f),mirHW(e))+12,hy:mirHW(e)};
+ default:return{hx:14,hy:e.size/2};}}
+const handleLocal=e=>{const b=bounds(e);return isSrc(e)?{x:b.hx+28,y:0}:{x:0,y:-b.hy-28}};
+const toWorld=(e,lx,ly)=>{const c=Math.cos(e.angle),s=Math.sin(e.angle);return{x:e.x+lx*c-ly*s,y:e.y+lx*s+ly*c}};
+const toLocal=(e,x,y)=>{const c=Math.cos(e.angle),s=Math.sin(e.angle),ox=x-e.x,oy=y-e.y;return{x:ox*c+oy*s,y:-ox*s+oy*c}};
+
+/* ---- Ray/element intersection, performed in the element's local frame ---- */
+function intersect(e,px,py,dx,dy){
+ const c=Math.cos(e.angle),s=Math.sin(e.angle),ox=px-e.x,oy=py-e.y;
+ const lx=ox*c+oy*s,ly=-ox*s+oy*c,ux=dx*c+dy*s,uy=-dx*s+dy*c,EPS=.05,hw=e.size/2;
+ let best=null;
+ const take=(t,nx,ny,y)=>{if(t>EPS&&(!best||t<best.t))best={t,nlx:nx,nly:ny,ly:y}};
+ const t=e.type;
+ if(t==='plane-mirror'||t==='screen'||isLens(e)){
+  if(Math.abs(ux)>1e-9){const k=-lx/ux,y=ly+k*uy;if(Math.abs(y)<=hw)take(k,-1,0,y)}
+ }else if(curved(e)){
+  const R=2*e.f,Ra=Math.abs(R),h=mirHW(e),qx=lx+R,b=qx*ux+ly*uy,c2=qx*qx+ly*ly-R*R,D=b*b-c2;
+  if(D>=0){const q=Math.sqrt(D);for(const k of[-b-q,-b+q]){const x=lx+k*ux,y=ly+k*uy;
+   if(Math.abs(y)<=h&&(x+R)*Math.sign(R)>0)take(k,(-R-x)/R,-y/R,y)}}   // n = (C-P)/R : unit normal towards the reflecting face
+ }else if(t==='glass-slab'){
+  const hx=e.depth/2,hy=hw;
+  for(const sg of[-1,1]){
+   if(Math.abs(ux)>1e-9){const k=(sg*hx-lx)/ux,y=ly+k*uy;if(Math.abs(y)<=hy+1e-6)take(k,sg,0,y)}
+   if(Math.abs(uy)>1e-9){const k=(sg*hy-ly)/uy,x=lx+k*ux;if(Math.abs(x)<=hx+1e-6)take(k,0,sg,0)}}
+ }
+ if(!best)return null;
+ best.x=px+dx*best.t;best.y=py+dy*best.t;
+ best.nx=best.nlx*c-best.nly*s;best.ny=best.nlx*s+best.nly*c;best.ldx=ux;best.ldy=uy;best.c=c;best.s=s;
+ return best;
+}
+function interact(e,h,dx,dy,virt){
+ const dn=dx*h.nx+dy*h.ny,t=e.type;
+ if(t==='plane-mirror'||curved(e)){
+  if(dn>=0)return null;                                   // opaque back: absorbed
+  const r=[dx-2*dn*h.nx,dy-2*dn*h.ny];
+  if(t!=='concave-mirror')virt.push(h.x,h.y,h.x-r[0]*240,h.y-r[1]*240);
+  return r;}
+ if(t==='screen'){if(dn<0)e.hits.push(h.ly);return null}
+ if(isLens(e)){                                           // thin lens: slope' = slope - y/f (exact in slope, any ray angle)
+  const m=h.ldy/h.ldx-h.ly/e.f,sg=Math.sign(h.ldx),L=Math.hypot(1,m),nx=sg/L,ny=sg*m/L;
+  const r=[nx*h.c-ny*h.s,nx*h.s+ny*h.c];
+  if(e.f<0)virt.push(h.x,h.y,h.x-r[0]*300,h.y-r[1]*300);
+  return r;}
+ if(t==='glass-slab'){                                    // Snell's law in vector form, with total internal reflection
+  let N,n1,n2;if(dn<0){N=[h.nx,h.ny];n1=1;n2=e.n}else{N=[-h.nx,-h.ny];n1=e.n;n2=1}
+  const ci=-(dx*N[0]+dy*N[1]),eta=n1/n2,k=1-eta*eta*(1-ci*ci);
+  if(k<0)return[dx+2*ci*N[0],dy+2*ci*N[1]];
+  const q=eta*ci-Math.sqrt(k);return[eta*dx+q*N[0],eta*dy+q*N[1]];}
+ return null;
+}
+function traceSource(src){
+ const segs=[],virt=[],norms=[],rays=[];let hits=0;const n=src.count;
+ if(src.type==='laser'){const px=-Math.sin(src.angle),py=Math.cos(src.angle),dx=Math.cos(src.angle),dy=Math.sin(src.angle);
+  for(let i=0;i<n;i++){const o=n>1?-src.size/2+src.size*i/(n-1):0;
+   rays.push([src.x+dx*22+px*o,src.y+dy*22+py*o,dx,dy])}}
+ else{const sp=src.spread*Math.PI/180,full=src.spread>=359;
+  for(let i=0;i<n;i++){const a=n>1?src.angle-sp/2+sp*i/(full?n:n-1):src.angle;rays.push([src.x,src.y,Math.cos(a),Math.sin(a)])}}
+ for(let [x,y,dx,dy] of rays){
+  for(let d=0;d<16;d++){
+   let best=null,be=null;
+   for(const e of els){if(isSrc(e)||e.type==='ruler')continue;const h=intersect(e,x,y,dx,dy);if(h&&(!best||h.t<best.t)){best=h;be=e}}
+   const L=best?best.t:4000;segs.push(x,y,x+dx*L,y+dy*L);
+   if(!best)break;
+   hits++;norms.push(best.x,best.y,best.nx,best.ny);
+   const nd=interact(be,best,dx,dy,virt);if(!nd)break;
+   dx=nd[0];dy=nd[1];x=best.x+dx*.02;y=best.y+dy*.02;
+  }}
+ return{color:src.color,segs,virt,norms,hits};
+}
+
+/* ---- Rendering ---- */
+const line=(a,b,c,d)=>{ctx.beginPath();ctx.moveTo(a,b);ctx.lineTo(c,d);ctx.stroke()};
+function label(t,x,y,col='#94a3b8'){ctx.fillStyle=col;ctx.font='10px "Fira Code",monospace';ctx.textAlign='center';ctx.fillText(t,x,y)}
+function drawEl(e){
+ ctx.save();ctx.translate(e.x,e.y);ctx.rotate(e.angle);
+ const on=e===sel,hw=e.size/2,t=e.type;ctx.lineWidth=2;ctx.lineCap='round';
+ if(t==='laser'){
+  ctx.fillStyle='#1e293b';ctx.strokeStyle=on?'#38bdf8':'#64748b';ctx.beginPath();ctx.roundRect(-20,-15,40,30,6);ctx.fill();ctx.stroke();
+  ctx.fillStyle=e.color;ctx.beginPath();ctx.arc(20,0,4,0,TAU);ctx.fill();
+  ctx.strokeStyle=e.color+'88';ctx.lineWidth=1;ctx.setLineDash([2,3]);line(22,-hw,22,hw);ctx.setLineDash([]);
+ }else if(t==='point-light'){
+  const gr=ctx.createRadialGradient(0,0,2,0,0,22);gr.addColorStop(0,e.color);gr.addColorStop(1,'rgba(0,0,0,0)');
+  ctx.fillStyle=gr;ctx.beginPath();ctx.arc(0,0,22,0,TAU);ctx.fill();
+  ctx.fillStyle=e.color;ctx.strokeStyle=on?'#f59e0b':'#e2e8f0';ctx.lineWidth=1.5;ctx.beginPath();ctx.arc(0,0,7,0,TAU);ctx.fill();ctx.stroke();
+ }else if(t==='plane-mirror'){
+  ctx.fillStyle='#334155';ctx.fillRect(0,-hw,5,e.size);
+  ctx.strokeStyle='#64748b';ctx.lineWidth=1;for(let y=-hw;y<hw-4;y+=10)line(5,y,10,y+6);
+  ctx.strokeStyle=on?'#38bdf8':'#f1f5f9';ctx.lineWidth=3;line(0,-hw,0,hw);
+  guide(e,0);
+ }else if(curved(e)){
+  const R=2*e.f,Ra=Math.abs(R),sg=Math.sign(R),h=mirHW(e),X=y=>-R+sg*Math.sqrt(Ra*Ra-y*y),N=40;
+  ctx.strokeStyle='#64748b';ctx.lineWidth=1;                         // hatched opaque back
+  for(let i=0;i<=N;i+=2){const y=-h+2*h*i/N,x=X(y),nx=(-R-x)/R,ny=-y/R;line(x,y,x-nx*9+ny*4,y-ny*9-nx*4)}
+  ctx.strokeStyle=on?'#38bdf8':'#f1f5f9';ctx.lineWidth=3;ctx.beginPath();
+  for(let i=0;i<=N;i++){const y=-h+2*h*i/N;i?ctx.lineTo(X(y),y):ctx.moveTo(X(y),y)}ctx.stroke();
+  guide(e,0);
+  [[-e.f,'F'],[-R,'C']].forEach(([x,l])=>{ctx.fillStyle='#f43f5e';ctx.beginPath();ctx.arc(x,0,3,0,TAU);ctx.fill();label(l,x,16)});
+ }else if(isLens(e)){
+  const R=lensR(e),N=40,conv=t==='convex-lens',c=sag(R,hw)+1.5,hf=y=>conv?c-sag(R,y):2+sag(R,y);
+  ctx.fillStyle='rgba(56,189,248,.16)';ctx.strokeStyle=on?'#38bdf8':'#0ea5e9';ctx.beginPath();
+  for(let i=0;i<=N;i++){const y=-hw+2*hw*i/N;i?ctx.lineTo(hf(y),y):ctx.moveTo(hf(y),y)}
+  for(let i=N;i>=0;i--){const y=-hw+2*hw*i/N;ctx.lineTo(-hf(y),y)}ctx.closePath();ctx.fill();ctx.stroke();
+  guide(e,2.4*Math.abs(e.f));const f=Math.abs(e.f);
+  [[-f,'F'],[f,'F'],[-2*f,'2F'],[2*f,'2F']].forEach(([x,l])=>{ctx.fillStyle='#f43f5e';ctx.beginPath();ctx.arc(x,0,3,0,TAU);ctx.fill();label(l,x,16)});
+ }else if(t==='glass-slab'){
+  ctx.fillStyle='rgba(16,185,129,.13)';ctx.strokeStyle=on?'#34d399':'#10b981';ctx.beginPath();ctx.roundRect(-e.depth/2,-hw,e.depth,e.size,3);ctx.fill();ctx.stroke();
+  ctx.rotate(-e.angle);label('n = '+e.n.toFixed(2),0,4,'#a7f3d0');
+ }else if(t==='screen'){drawScreen(e,on)}
+ else if(t==='ruler'){
+  ctx.fillStyle='rgba(251,191,36,.18)';ctx.strokeStyle='#f59e0b';ctx.lineWidth=1.5;ctx.fillRect(-hw,-16,e.size,32);ctx.strokeRect(-hw,-16,e.size,32);
+  const n=Math.floor(e.size/10);for(let i=0;i<=n;i++){const x=-hw+i*10,mj=i%5===0;line(x,-16,x,mj?-6:-11);if(mj)label(String(i*10),x,8,'#fbbf24')}
+ }
+ ctx.restore();
+}
+function guide(e,len){ // principal axis
+ const L=len||Math.abs(2*e.f)*1.3||200;ctx.save();ctx.strokeStyle='rgba(148,163,184,.25)';ctx.lineWidth=1;ctx.setLineDash([5,5]);line(-L,0,L,0);ctx.restore();
+}
+function drawScreen(e,on){
+ const hw=e.size/2;
+ ctx.fillStyle='#e2e8f0';ctx.fillRect(0,-hw,7,e.size);                       // white projection surface, facing left
+ ctx.strokeStyle=on?'#c084fc':'#a78bfa';ctx.lineWidth=2;ctx.strokeRect(0,-hw,7,e.size);
+ ctx.fillStyle='#64748b';ctx.fillRect(-4,-hw-7,15,7);ctx.fillRect(-4,hw,15,5);      // roller and weighted bar
+ if(e.hits.length){                                                            // lit spots and intensity profile
+  ctx.save();ctx.globalCompositeOperation='lighter';
+  for(const y of e.hits){const gr=ctx.createRadialGradient(0,y,0,0,y,14);gr.addColorStop(0,'rgba(255,255,255,.55)');gr.addColorStop(1,'rgba(255,255,255,0)');ctx.fillStyle=gr;ctx.fillRect(-14,y-14,28,28)}
+  ctx.restore();
+  const bin=8,bins={};let mx=1;for(const y of e.hits){const k=Math.floor((y+hw)/bin);mx=Math.max(mx,bins[k]=(bins[k]||0)+1)}
+  ctx.fillStyle='rgba(167,139,250,.75)';for(const k in bins){const L=bins[k]/mx*40;ctx.fillRect(-L-3,-hw+k*bin,L,bin-2)}
+ }
+ ctx.save();ctx.translate(22,0);ctx.rotate(-Math.PI/2);                       // projection-screen icon + caption on the back
+ ctx.strokeStyle='#cbd5e1';ctx.lineWidth=1.4;ctx.lineJoin='round';
+ ctx.save();ctx.rotate(Math.PI/2);ctx.translate(0,-30);line(-9,-8,9,-8);ctx.strokeRect(-7,-7,14,10);line(0,3,0,10);line(-5,14,0,10);line(5,14,0,10);ctx.restore();
+ label('SCREEN',0,16,'#cbd5e1');ctx.restore();
+}
+function drawRays(res){
+ ctx.save();ctx.globalCompositeOperation='lighter';ctx.lineCap='round';
+ for(const r of res){const p=new Path2D(),s=r.segs;for(let i=0;i<s.length;i+=4){p.moveTo(s[i],s[i+1]);p.lineTo(s[i+2],s[i+3])}
+  ctx.strokeStyle=r.color;ctx.globalAlpha=.16;ctx.lineWidth=6;ctx.stroke(p);ctx.globalAlpha=.95;ctx.lineWidth=1.5;ctx.stroke(p)}
+ ctx.restore();
+ ctx.save();ctx.setLineDash([4,4]);ctx.lineWidth=1;
+ if(showV){ctx.strokeStyle='rgba(216,180,254,.5)';for(const r of res)for(let i=0;i<r.virt.length;i+=4)line(r.virt[i],r.virt[i+1],r.virt[i+2],r.virt[i+3])}
+ if(showN){ctx.strokeStyle='#94a3b8';for(const r of res)for(let i=0;i<r.norms.length;i+=4){const[x,y,a,b]=r.norms.slice(i,i+4);line(x-a*28,y-b*28,x+a*28,y+b*28)}}
+ ctx.restore();
+}
+function drawSel(){
+ if(!sel)return;const b=bounds(sel);ctx.save();ctx.translate(sel.x,sel.y);ctx.rotate(sel.angle);
+ ctx.strokeStyle='#38bdf8';ctx.lineWidth=1;ctx.setLineDash([3,3]);ctx.strokeRect(-b.hx-8,-b.hy-8,2*b.hx+16,2*b.hy+16);ctx.setLineDash([]);
+ const h=handleLocal(sel);ctx.beginPath();ctx.moveTo(isSrc(sel)?b.hx+8:0,isSrc(sel)?0:-b.hy-8);ctx.lineTo(h.x,h.y);ctx.stroke();
+ ctx.fillStyle='#38bdf8';ctx.beginPath();ctx.arc(h.x,h.y,6,0,TAU);ctx.fill();ctx.restore();
+}
+function drawGrid(){
+ if(!showGrid)return;ctx.save();ctx.lineWidth=1;
+ for(const[step,col]of[[20,'#141c2e'],[100,'#1f2a44']]){ctx.strokeStyle=col;ctx.beginPath();
+  for(let x=0;x<W;x+=step){ctx.moveTo(x+.5,0);ctx.lineTo(x+.5,H)}for(let y=0;y<H;y+=step){ctx.moveTo(0,y+.5);ctx.lineTo(W,y+.5)}ctx.stroke()}
+ ctx.restore();
+}
+function frame(ts){
+ fc++;if(ts-lt>=1000){$('s-fps').textContent=fc;fc=0;lt=ts}
+ ctx.setTransform(dpr,0,0,dpr,0,0);ctx.clearRect(0,0,W,H);drawGrid();
+ els.forEach(e=>{if(e.type==='screen')e.hits=[]});
+ const res=els.filter(isSrc).map(traceSource);
+ els.forEach(drawEl);drawRays(res);drawSel();
+ $('s-rays').textContent=res.reduce((a,r)=>a+r.segs.length/4,0);$('s-hits').textContent=res.reduce((a,r)=>a+r.hits,0);
+ if(sel&&sel.type==='screen'){const s=document.querySelector('[data-v=spot]');if(s){const h=sel.hits;s.textContent=h.length?`${h.length} rays, spread ${(Math.max(...h)-Math.min(...h)).toFixed(1)} px`:'no light'}}
+ requestAnimationFrame(frame);
+}
+
+/* ---- Interaction ---- */
+const pos=ev=>{const r=cv.getBoundingClientRect();return{x:ev.clientX-r.left,y:ev.clientY-r.top}};
+const pick=m=>{for(let i=els.length-1;i>=0;i--){const e=els[i],l=toLocal(e,m.x,m.y),b=bounds(e);if(Math.abs(l.x)<=b.hx+8&&Math.abs(l.y)<=b.hy+8)return e}return null};
+cv.addEventListener('pointerdown',ev=>{
+ const m=pos(ev);
+ if(sel){const h=handleLocal(sel),w=toWorld(sel,h.x,h.y);
+  if(Math.hypot(m.x-w.x,m.y-w.y)<16){drag={mode:'rot',off:Math.atan2(m.y-sel.y,m.x-sel.x)-sel.angle};cv.setPointerCapture(ev.pointerId);return}}
+ const f=pick(m);
+ if(f){sel=f;drag={mode:'move',dx:m.x-f.x,dy:m.y-f.y};cv.setPointerCapture(ev.pointerId)}else sel=null;
+ buildInspector();
+});
+cv.addEventListener('pointermove',ev=>{
+ const m=pos(ev);
+ if(!drag){cv.style.cursor=pick(m)?'grab':'default';return}
+ if(drag.mode==='rot'){let a=Math.atan2(m.y-sel.y,m.x-sel.x)-drag.off;if(ev.shiftKey){const st=Math.PI/12;a=Math.round(a/st)*st}
+  sel.angle=Math.atan2(Math.sin(a),Math.cos(a));}
+ else{let x=m.x-drag.dx,y=m.y-drag.dy;if(showGrid){x=g(x);y=g(y)}sel.x=x;sel.y=y}
+ refresh();
+});
+['pointerup','pointercancel'].forEach(t=>cv.addEventListener(t,()=>drag=null));
+addEventListener('keydown',ev=>{
+ if(['INPUT','SELECT'].includes(document.activeElement.tagName))return;
+ if((ev.key==='Delete'||ev.key==='Backspace')&&sel){remove(sel)}if(ev.key==='Escape'){sel=null;buildInspector()}
+});
+function remove(e){els=els.filter(x=>x!==e);sel=null;buildInspector()}
+
+/* ---- Inspector ---- */
+const ICON={laser:'<rect x="2" y="8" width="9" height="8" rx="2"/><path d="M13 9h9M13 12h9M13 15h9"/>',
+'point-light':'<circle cx="12" cy="12" r="3"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4M5 5l3 3M16 16l3 3M19 5l-3 3M8 16l-3 3"/>',
+'plane-mirror':'<path d="M9 3v18"/><path d="M9 6l4-3M9 11l4-3M9 16l4-3M9 21l4-3"/>',
+'concave-mirror':'<path d="M8 3Q18 12 8 21"/><path d="M14 7l4-3M16 12l4-3M14 17l4-3"/>',
+'convex-mirror':'<path d="M14 3Q4 12 14 21"/><path d="M16 7l4-3M16 12l4-3M16 17l4-3"/>',
+'convex-lens':'<path d="M12 2Q21 12 12 22Q3 12 12 2Z"/>','concave-lens':'<path d="M6 3h12Q14 12 18 21H6Q10 12 6 3Z"/>',
+'glass-slab':'<rect x="6" y="4" width="12" height="16" rx="1.5"/><path d="M2 9l4 1M18 11l4 1.5"/>',
+screen:'<path d="M4 4h16"/><rect x="6" y="5" width="12" height="9"/><path d="M12 14v5M8 22l4-3 4 3"/>',
+ruler:'<rect x="2" y="8" width="20" height="8" rx="1"/><path d="M6 8v3M10 8v4M14 8v3M18 8v4"/>'};
+const PAL=[['Light sources',['laser','point-light']],['Mirrors',['plane-mirror','concave-mirror','convex-mirror']],
+ ['Lenses and media',['convex-lens','concave-lens','glass-slab']],['Detectors and tools',['screen','ruler']]];
+$('palette').innerHTML=PAL.map(([h,l])=>`<div class="text-xs font-semibold text-slate-400">${h}</div><div class="flex flex-wrap gap-1.5">`+
+ l.map(t=>`<button class="pb" data-add="${t}"><svg viewBox="0 0 24 24">${ICON[t]}</svg>${LABEL[t]}</button>`).join('')+'</div>').join('');
+$('palette').addEventListener('click',ev=>{const b=ev.target.closest('[data-add]');if(!b)return;
+ const k=els.length%6*20;sel=new El(b.dataset.add,g(W/2)+k,g(H/2)+k);els.push(sel);buildInspector()});
+
+const FMT={pos:e=>`${Math.round(e.x)}, ${Math.round(e.y)}`,angle:e=>Math.round(e.angle*180/Math.PI)+'°',size:e=>Math.round(e.size)+' px',
+ f:e=>Math.round(e.f)+' px',n:e=>e.n.toFixed(2),depth:e=>Math.round(e.depth)+' px',spread:e=>Math.round(e.spread)+'°',count:e=>e.count,spot:()=>''};
+const sl=(l,p,min,max,step,val,deg)=>`<div><label class="flex justify-between text-slate-400 mb-1"><span>${l}</span><span class="mono text-cyan-300" data-v="${p}"></span></label><input type="range" min="${min}" max="${max}" step="${step}" value="${val}" data-p="${p}"${deg?' data-deg="1"':''}></div>`;
+function buildInspector(){
+ const box=$('insp');
+ if(!sel){box.innerHTML='<p class="text-slate-500 italic text-center py-6">Select an element to edit its properties.</p>';return}
+ const e=sel,t=e.type,SZ={laser:['Beam width',10,240],ruler:['Length',100,600],'glass-slab':['Height',40,300]}[t]||['Aperture',40,400];
+ let h=`<div class="flex justify-between items-center bg-slate-800/60 border border-slate-700 rounded-lg p-2"><b class="text-cyan-400">${LABEL[t]}</b><button id="del" class="text-rose-400 hover:text-rose-300">Delete</button></div>
+ <div class="flex justify-between text-slate-400"><span>Position</span><span class="mono text-cyan-300" data-v="pos"></span></div>`;
+ h+=sl('Angle','angle',-180,180,1,Math.round(e.angle*180/Math.PI),1);
+ if(t!=='point-light')h+=sl(SZ[0],'size',SZ[1],SZ[2],1,e.size);
+ if(t==='point-light')h+=sl('Spread angle','spread',5,360,1,e.spread);
+ if(isSrc(e)){h+=sl('Ray count','count',1,61,1,e.count)+'<div class="flex gap-2">'+['#00ffcc','#ff4d6d','#4d9bff','#ffd23f'].map(c=>`<button data-c="${c}" class="w-6 h-6 rounded-full border-2 border-slate-600" style="background:${c}"></button>`).join('')+'</div>'}
+ if(isLens(e)||curved(e))h+=sl('Focal length f','f',e.f>0?20:-400,e.f>0?400:-20,1,e.f);
+ if(isLens(e))h+=sl('Refractive index (sets lens curvature)','n',1.1,2.5,.01,e.n)+'<p class="text-slate-500">Thin-lens model: R = 2(n−1)f. Index changes the drawn shape, not f.</p>';
+ if(t==='glass-slab')h+=sl('Refractive index n','n',1,2.5,.01,e.n)+sl('Thickness','depth',20,300,1,e.depth);
+ if(curved(e)||t==='plane-mirror')h+='<p class="text-slate-500">Silver edge = reflecting face (arrives from the left at 0°). Hatched side is the opaque back.</p>';
+ if(curved(e))h+='<p class="text-slate-500">Exact spherical surface (R = 2f): wide apertures show real spherical aberration.</p>';
+ if(t==='screen')h+='<div class="flex justify-between text-slate-400"><span>Spot</span><span class="mono text-violet-300" data-v="spot"></span></div>';
+ box.innerHTML=h;refresh();
+}
+function refresh(){
+ if(!sel)return;$('insp').querySelectorAll('[data-v]').forEach(s=>{if(s.dataset.v!=='spot')s.textContent=FMT[s.dataset.v](sel)});
+ const a=$('insp').querySelector('[data-p=angle]');if(a)a.value=Math.round(sel.angle*180/Math.PI);
+}
+$('insp').addEventListener('input',ev=>{const t=ev.target;if(!sel||!t.dataset.p)return;
+ let v=parseFloat(t.value);if(t.dataset.deg)v=v*Math.PI/180;sel[t.dataset.p]=v;refresh();if(t.dataset.p==='n'||t.dataset.p==='f'||t.dataset.p==='size')refresh()});
+$('insp').addEventListener('click',ev=>{if(ev.target.id==='del')remove(sel);if(ev.target.dataset.c&&sel)sel.color=ev.target.dataset.c});
+
+/* ---- Toolbar and presets ---- */
+const tog=(id,txt,get)=>{const b=$(id);b.classList.toggle('on',get());b.textContent=txt+(get()?'on':'off')};
+$('b-grid').onclick=()=>{showGrid=!showGrid;tog('b-grid','Grid snap: ',()=>showGrid)};
+$('b-norm').onclick=()=>{showN=!showN;tog('b-norm','Normals: ',()=>showN)};
+$('b-virt').onclick=()=>{showV=!showV;tog('b-virt','Virtual rays: ',()=>showV)};
+$('b-clear').onclick=()=>{els=[];sel=null;buildInspector()};
+$('dens').oninput=ev=>{density=+ev.target.value;$('denslbl').textContent=density;els.forEach(e=>{if(isSrc(e))e.count=density});if(sel&&isSrc(sel))buildInspector()};
+$('preset').onchange=ev=>{if(ev.target.value)load(ev.target.value);ev.target.value=''};
+function load(p){
+ const cx=g(W/2),cy=g(H/2),mk=(t,x,y,o={})=>{const e=new El(t,g(x),g(y));Object.assign(e,o);els.push(e);return e};
+ els=[];sel=null;
+ if(p==='lens'){mk('laser',W*.15,cy,{size:100});const l=mk('convex-lens',W*.45,cy,{f:160,size:200});mk('screen',l.x+160,cy,{size:200})}
+ else if(p==='slab'){mk('laser',W*.2,H*.3,{angle:.55,size:40,count:5});mk('glass-slab',W*.5,H*.55,{size:220,depth:140})}
+ else if(p==='concave'){mk('laser',W*.12,cy-80,{size:60});mk('concave-mirror',W*.72,cy,{f:150,size:220})}
+ else if(p==='convex'){mk('laser',W*.12,cy-80,{size:60});mk('convex-mirror',W*.72,cy,{f:-150,size:220})}
+ else if(p==='periscope'){mk('laser',W*.15,H*.7,{size:40,count:7});mk('plane-mirror',W*.5,H*.7,{angle:Math.PI/4,size:120});
+  mk('plane-mirror',W*.5,H*.25,{angle:-3*Math.PI/4,size:120});mk('screen',W*.85,H*.25,{size:160})}
+ buildInspector();
+}
+
+/* ---- Boot ---- */
+function resize(){W=stage.clientWidth;H=stage.clientHeight;dpr=window.devicePixelRatio||1;cv.width=W*dpr;cv.height=H*dpr;cv.style.width=W+'px';cv.style.height=H+'px'}
+new ResizeObserver(resize).observe(stage);resize();load('lens');requestAnimationFrame(frame);
+</script>
+</body>
+</html>
