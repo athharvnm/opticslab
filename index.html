@@ -292,6 +292,7 @@
                 } else if (this.type === 'screen') {
                     this.width = 180;
                     this.height = 16;
+                    this.angle = Math.PI / 2; // Positioned vertically (90 deg) across rays by default
                 } else if (this.type === 'ruler') {
                     this.width = 250;
                     this.height = 30;
@@ -825,7 +826,7 @@
         }
 
         function handleRayPhysics(ray, hit, el) {
-            const EPSILON = 0.01; // Epsilon offset to prevent boundary self-intersection loops
+            const EPSILON = 0.01;
 
             if (el.type === 'plane-mirror') {
                 const dot = ray.dx * hit.normalX + ray.dy * hit.normalY;
@@ -845,7 +846,6 @@
                 const y = hit.localY;
                 const f = el.focalLength;
                 
-                // Radius of curvature R = 2f; Curvature angle theta_N = -y / (2f)
                 const curveAngle = -y / (2 * f);
 
                 const cosC = Math.cos(curveAngle);
@@ -923,7 +923,6 @@
                 }
             }
             else if (el.type === 'convex-lens' || el.type === 'concave-lens') {
-                // Correct Paraxial Vector Deflection along local aperture
                 const y = hit.localY;
                 const f = el.focalLength;
 
