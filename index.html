@@ -42,6 +42,7 @@
             display: block;
             cursor: crosshair;
         }
+        /* Custom scrollbars */
         ::-webkit-scrollbar {
             width: 6px;
             height: 6px;
@@ -109,7 +110,7 @@
             </button>
         </div>
 
-        <!-- Global Ray Density -->
+        <!-- Global Ray Color / Power -->
         <div class="flex items-center space-x-3 text-xs">
             <span class="text-slate-400">Ray Density:</span>
             <input type="range" id="global-ray-density" min="1" max="61" step="2" value="15" class="w-24 accent-cyan-400 cursor-pointer" oninput="updateGlobalRayDensity(this.value)">
@@ -170,7 +171,7 @@
             <div class="grid grid-cols-2 gap-2">
                 <button onclick="spawnElement('screen')" class="tool-btn flex flex-col items-center justify-center p-2.5 rounded-lg bg-slate-800 border border-slate-700/80 hover:border-purple-400 text-slate-200">
                     <i class="fa-solid fa-border-left text-purple-400 text-lg mb-1"></i>
-                    <span class="text-xs">Screen</span>
+                    <span class="text-xs">Projection Screen</span>
                 </button>
                 <button onclick="spawnElement('ruler')" class="tool-btn flex flex-col items-center justify-center p-2.5 rounded-lg bg-slate-800 border border-slate-700/80 hover:border-yellow-400 text-slate-200">
                     <i class="fa-solid fa-ruler-combined text-yellow-400 text-lg mb-1"></i>
@@ -178,11 +179,12 @@
                 </button>
             </div>
 
+            <!-- Mini Quick Instructions -->
             <div class="mt-auto p-3 rounded-lg bg-slate-800/50 border border-slate-700/50 text-[11px] text-slate-400 space-y-1">
                 <p class="font-medium text-slate-300"><i class="fa-solid fa-circle-info text-cyan-400 mr-1"></i> Controls:</p>
                 <p>• <b>Click + Drag</b> elements to position</p>
-                <p>• <b>Rotate Handle</b> to tilt element</p>
-                <p>• <b>Delete Key</b> removes selection</p>
+                <p>• <b>Rotate Ring</b> around selection to tilt</p>
+                <p>• <b>Delete Key</b> removes selected item</p>
             </div>
         </aside>
 
@@ -190,6 +192,7 @@
         <main class="flex-1 h-full relative overflow-hidden bg-darkBg" id="canvas-container">
             <canvas id="opticsCanvas" class="w-full h-full"></canvas>
 
+            <!-- Floating Quick Stats Overlay -->
             <div id="stats-overlay" class="absolute top-4 left-4 bg-slate-900/80 backdrop-blur-md border border-slate-700/60 p-2.5 rounded-lg text-xs font-mono text-slate-300 pointer-events-none flex flex-col gap-1 shadow-lg">
                 <div class="flex items-center gap-2 text-cyan-400 font-semibold border-b border-slate-700/50 pb-1">
                     <i class="fa-solid fa-gauge-high"></i> OPTICS ANALYZER
@@ -200,7 +203,7 @@
             </div>
         </main>
 
-        <!-- Right Sidebar: Properties Panel -->
+        <!-- Right Sidebar: Properties Control Panel -->
         <aside id="properties-panel" class="w-72 bg-slate-900/90 border-l border-slate-800 flex flex-col p-4 gap-4 z-10 shrink-0 select-none overflow-y-auto">
             <div class="flex items-center justify-between border-b border-slate-800 pb-2">
                 <h2 class="text-sm font-bold uppercase tracking-wider text-slate-300 flex items-center gap-2">
@@ -211,6 +214,7 @@
                 </button>
             </div>
 
+            <!-- Dynamic Property Controls Container -->
             <div id="inspector-content" class="space-y-4">
                 <div class="text-xs text-slate-500 italic text-center py-8">
                     Select an element on the workbench to adjust optical properties.
@@ -219,8 +223,9 @@
         </aside>
     </div>
 
-    <!-- RAY OPTICS SIMULATION ENGINE -->
+    <!-- MAIN RAY OPTICS SIMULATION ENGINE -->
     <script>
+        // --- Canvas Setup & State ---
         const canvas = document.getElementById('opticsCanvas');
         const ctx = canvas.getContext('2d');
         const container = document.getElementById('canvas-container');
@@ -235,32 +240,36 @@
         let dragOffset = { x: 0, y: 0 };
         let initialAngle = 0;
 
+        // Settings
         let showGrid = true;
         let showNormals = false;
         let showVirtualRays = true;
         let globalRayDensity = 15;
         let totalIntersectionsCount = 0;
 
+        // FPS Tracker
         let lastTime = performance.now();
         let frameCount = 0;
         let fps = 60;
 
+        // --- Core Classes ---
         class OpticalElement {
             constructor(type, x, y) {
                 this.id = Math.random().toString(36).substr(2, 9);
                 this.type = type;
                 this.x = x;
                 this.y = y;
-                this.angle = 0;
-                this.width = 120;
-                this.height = 40;
+                this.angle = 0; // in radians
+                this.width = 120; // primary length/aperture
+                this.height = 40;  // thickness/secondary dim
 
-                this.focalLength = 150;
-                this.refractiveIndex = 1.5;
-                this.raySpread = 30;
+                // Specific properties based on type
+                this.focalLength = 150; // for lenses/mirrors (+ or -)
+                this.refractiveIndex = 1.5; // for glass/lenses
+                this.raySpread = 30; // degrees for point light
                 this.rayCount = globalRayDensity;
-                this.beamWidth = 60;
-                this.color = '#00ffcc';
+                this.beamWidth = 60; // width of parallel laser
+                this.color = '#00ffcc'; // ray color for sources
                 
                 this.initDefaults();
             }
@@ -292,13 +301,24 @@
                 } else if (this.type === 'screen') {
                     this.width = 180;
                     this.height = 16;
+                    this.angle = -Math.PI / 2; // Default -90 deg rotation so screen stands vertically across rays
                 } else if (this.type === 'ruler') {
                     this.width = 250;
                     this.height = 30;
                 }
             }
+
+            getBounds() {
+                return {
+                    x: this.x,
+                    y: this.y,
+                    w: this.width,
+                    h: this.height
+                };
+            }
         }
 
+        // --- Init Window & Presets ---
         function resizeCanvas() {
             width = container.clientWidth;
             height = container.clientHeight;
@@ -319,6 +339,7 @@
             deselectElement();
 
             if (preset === 'lens-demo') {
+                // Light source on left, convex lens in center, screen on right
                 const laser = new OpticalElement('laser', width * 0.2, height * 0.5);
                 laser.beamWidth = 80;
 
@@ -342,18 +363,20 @@
                 laser.beamWidth = 100;
 
                 const mirror = new OpticalElement('concave-mirror', width * 0.65, height * 0.5);
-                mirror.angle = Math.PI;
+                mirror.angle = Math.PI; // facing left
                 mirror.focalLength = 160;
 
                 elements.push(laser, mirror);
             }
         }
 
+        // --- Interaction Handlers ---
         canvas.addEventListener('mousedown', (e) => {
             const rect = canvas.getBoundingClientRect();
             const mouseX = e.clientX - rect.left;
             const mouseY = e.clientY - rect.top;
 
+            // Check if clicking rotation handle of currently selected element
             if (selectedElement) {
                 const rotHandle = getRotationHandlePos(selectedElement);
                 const distToRot = Math.hypot(mouseX - rotHandle.x, mouseY - rotHandle.y);
@@ -364,24 +387,17 @@
                 }
             }
 
+            // Check click on elements (topmost first)
             let found = null;
             for (let i = elements.length - 1; i >= 0; i--) {
                 const el = elements[i];
                 const dx = mouseX - el.x;
                 const dy = mouseY - el.y;
+                // Rotate click into element local coordinates
                 const localX = dx * Math.cos(-el.angle) - dy * Math.sin(-el.angle);
                 const localY = dx * Math.sin(-el.angle) + dy * Math.cos(-el.angle);
 
-                let hitW = el.width;
-                let hitH = el.height || 20;
-
-                // Transpose hit detection boundaries for vertical screen
-                if (el.type === 'screen') {
-                    hitW = el.height || 16;
-                    hitH = el.width;
-                }
-
-                if (Math.abs(localX) <= hitW / 2 + 10 && Math.abs(localY) <= hitH / 2 + 10) {
+                if (Math.abs(localX) <= el.width / 2 + 10 && Math.abs(localY) <= (el.height || 20) / 2 + 10) {
                     found = el;
                     break;
                 }
@@ -407,6 +423,7 @@
                 const currentAngle = Math.atan2(mouseY - selectedElement.y, mouseX - selectedElement.x);
                 let newAngle = currentAngle - initialAngle;
                 
+                // Snap to 15 degree increments if shift held
                 if (e.shiftKey) {
                     const snapStep = Math.PI / 12;
                     newAngle = Math.round(newAngle / snapStep) * snapStep;
@@ -447,7 +464,7 @@
         });
 
         function getRotationHandlePos(el) {
-            const offset = (el.type === 'screen' ? el.height : el.width) / 2 + 25;
+            const offset = el.width / 2 + 25;
             return {
                 x: el.x + Math.cos(el.angle) * offset,
                 y: el.y + Math.sin(el.angle) * offset
@@ -499,6 +516,7 @@
             deselectElement();
         }
 
+        // --- Inspector Controls UI Builder ---
         function renderInspector() {
             const container = document.getElementById('inspector-content');
             if (!selectedElement) {
@@ -546,6 +564,7 @@
                     </div>
             `;
 
+            // Specific controls by element category
             if (el.type === 'convex-lens' || el.type === 'concave-lens' || el.type === 'concave-mirror' || el.type === 'convex-mirror') {
                 html += `
                     <div>
@@ -655,9 +674,10 @@
             if (bwEl) bwEl.textContent = `${Math.round(el.beamWidth)} px`;
         }
 
+        // --- MATH & VECTOR HELPER FUNCTIONS ---
         function lineIntersection(x1, y1, x2, y2, x3, y3, x4, y4) {
             const denom = (y4 - y3) * (x2 - x1) - (x4 - x3) * (y2 - y1);
-            if (Math.abs(denom) < 1e-9) return null;
+            if (denom === 0) return null; // Parallel
 
             const ua = ((x4 - x3) * (y1 - y3) - (y4 - y3) * (x1 - x3)) / denom;
             const ub = ((x2 - x1) * (y1 - y3) - (y2 - y1) * (x1 - x3)) / denom;
@@ -672,12 +692,14 @@
             return null;
         }
 
+        // --- RAY TRACING CORE ENGINE ---
         let totalRaysRendered = 0;
 
         function traceRays() {
             totalIntersectionsCount = 0;
             totalRaysRendered = 0;
 
+            // Collect light sources
             const sources = elements.filter(el => el.type === 'laser' || el.type === 'point-light');
 
             sources.forEach(source => {
@@ -718,7 +740,7 @@
         }
 
         function propagateRay(ray) {
-            if (ray.depth > 12) return;
+            if (ray.depth > 12) return; // Prevent infinite recursion limit
             totalRaysRendered++;
 
             const maxDist = 3000;
@@ -729,6 +751,7 @@
             let closestDist = maxDist;
             let hitElement = null;
 
+            // Check collision against all optical elements
             elements.forEach(el => {
                 if (el.type === 'laser' || el.type === 'point-light' || el.type === 'ruler') return;
 
@@ -743,6 +766,7 @@
                 }
             });
 
+            // Draw primary ray path
             const drawEndX = closestHit ? closestHit.x : rayEndX;
             const drawEndY = closestHit ? closestHit.y : rayEndY;
 
@@ -760,6 +784,7 @@
             if (closestHit) {
                 totalIntersectionsCount++;
 
+                // Render normal lines if enabled
                 if (showNormals) {
                     ctx.save();
                     ctx.strokeStyle = '#94a3b8';
@@ -772,6 +797,7 @@
                     ctx.restore();
                 }
 
+                // Handle Optical Physics Behavior
                 handleRayPhysics(ray, closestHit, hitElement);
             }
         }
@@ -781,38 +807,31 @@
             const cos = Math.cos(-rad);
             const sin = Math.sin(-rad);
 
+            // Transform ray to element local coordinates
             const lrx1 = (rx1 - el.x) * cos - (ry1 - el.y) * sin;
             const lry1 = (rx1 - el.x) * sin + (ry1 - el.y) * cos;
             const lrx2 = (rx2 - el.x) * cos - (ry2 - el.y) * sin;
             const lry2 = (rx2 - el.x) * sin + (ry2 - el.y) * cos;
 
-            if (el.type === 'plane-mirror') {
+            if (el.type === 'plane-mirror' || el.type === 'screen') {
                 const hit = lineIntersection(lrx1, lry1, lrx2, lry2, -el.width / 2, 0, el.width / 2, 0);
                 if (hit) {
                     const worldX = el.x + hit.x * Math.cos(rad) - hit.y * Math.sin(rad);
                     const worldY = el.y + hit.x * Math.sin(rad) + hit.y * Math.cos(rad);
+                    // Normal points upwards in local coords (0, -1)
                     let nx = -Math.sin(rad);
                     let ny = Math.cos(rad);
                     return { x: worldX, y: worldY, normalX: nx, normalY: ny, localHitX: hit.x };
                 }
-            } else if (el.type === 'screen') {
-                // Vertical screen line along local Y axis
-                const hit = lineIntersection(lrx1, lry1, lrx2, lry2, 0, -el.width / 2, 0, el.width / 2);
-                if (hit) {
-                    const worldX = el.x + hit.x * Math.cos(rad) - hit.y * Math.sin(rad);
-                    const worldY = el.y + hit.x * Math.sin(rad) + hit.y * Math.cos(rad);
-                    let nx = Math.cos(rad);
-                    let ny = Math.sin(rad);
-                    return { x: worldX, y: worldY, normalX: nx, normalY: ny, localHitY: hit.y };
-                }
             } else if (el.type === 'glass-slab') {
+                // Box collision in local coords
                 const hw = el.width / 2;
                 const hh = el.height / 2;
                 const segments = [
-                    { x1: -hw, y1: -hh, x2: hw, y2: -hh, nx: 0, ny: -1 },
-                    { x1: hw, y1: -hh, x2: hw, y2: hh, nx: 1, ny: 0 },
-                    { x1: hw, y1: hh, x2: -hw, y2: hh, nx: 0, ny: 1 },
-                    { x1: -hw, y1: hh, x2: -hw, y2: -hh, nx: -1, ny: 0 }
+                    { x1: -hw, y1: -hh, x2: hw, y2: -hh, nx: 0, ny: -1 }, // Top
+                    { x1: hw, y1: -hh, x2: hw, y2: hh, nx: 1, ny: 0 },   // Right
+                    { x1: hw, y1: hh, x2: -hw, y2: hh, nx: 0, ny: 1 },   // Bottom
+                    { x1: -hw, y1: hh, x2: -hw, y2: -hh, nx: -1, ny: 0 }  // Left
                 ];
 
                 let bestHit = null;
@@ -824,6 +843,7 @@
                         minU = hit.param;
                         const worldX = el.x + hit.x * Math.cos(rad) - hit.y * Math.sin(rad);
                         const worldY = el.y + hit.x * Math.sin(rad) + hit.y * Math.cos(rad);
+                        // Rotate normal to world space
                         const wnx = seg.nx * Math.cos(rad) - seg.ny * Math.sin(rad);
                         const wny = seg.nx * Math.sin(rad) + seg.ny * Math.cos(rad);
                         bestHit = { x: worldX, y: worldY, normalX: wnx, normalY: wny };
@@ -831,6 +851,7 @@
                 });
                 return bestHit;
             } else if (el.type === 'convex-lens' || el.type === 'concave-lens' || el.type === 'concave-mirror' || el.type === 'convex-mirror') {
+                // Thin lens / Curved mirror approximation along vertical aperture plane
                 const hit = lineIntersection(lrx1, lry1, lrx2, lry2, 0, -el.width / 2, 0, el.width / 2);
                 if (hit) {
                     const worldX = el.x + hit.x * Math.cos(rad) - hit.y * Math.sin(rad);
@@ -847,25 +868,21 @@
             const EPSILON = 0.01;
 
             if (el.type === 'plane-mirror') {
+                // Reflection law: R = I - 2(I . N)N
                 const dot = ray.dx * hit.normalX + ray.dy * hit.normalY;
                 const rx = ray.dx - 2 * dot * hit.normalX;
                 const ry = ray.dy - 2 * dot * hit.normalY;
 
-                propagateRay({ 
-                    x: hit.x + rx * EPSILON, 
-                    y: hit.y + ry * EPSILON, 
-                    dx: rx, 
-                    dy: ry, 
-                    color: ray.color, 
-                    depth: ray.depth + 1 
-                });
+                propagateRay({ x: hit.x + rx * EPSILON, y: hit.y + ry * EPSILON, dx: rx, dy: ry, color: ray.color, depth: ray.depth + 1 });
             } 
             else if (el.type === 'concave-mirror' || el.type === 'convex-mirror') {
+                // Curved mirror reflection logic based on focal point curvature
                 const y = hit.localY;
                 const f = el.focalLength;
-                
+                // Angle of normal bending due to curvature: theta approx y / (2f)
                 const curveAngle = -y / (2 * f);
 
+                // Rotate normal vector by curveAngle
                 const cosC = Math.cos(curveAngle);
                 const sinC = Math.sin(curveAngle);
                 const curWnx = hit.normalX * cosC - hit.normalY * sinC;
@@ -875,18 +892,13 @@
                 const rx = ray.dx - 2 * dot * curWnx;
                 const ry = ray.dy - 2 * dot * curWny;
 
-                propagateRay({ 
-                    x: hit.x + rx * EPSILON, 
-                    y: hit.y + ry * EPSILON, 
-                    dx: rx, 
-                    dy: ry, 
-                    color: ray.color, 
-                    depth: ray.depth + 1 
-                });
+                // Propagate reflected real ray
+                propagateRay({ x: hit.x + rx * EPSILON, y: hit.y + ry * EPSILON, dx: rx, dy: ry, color: ray.color, depth: ray.depth + 1 });
 
+                // Render virtual ray extensions back through/behind mirror
                 if (showVirtualRays) {
                     ctx.save();
-                    ctx.strokeStyle = 'rgba(216, 180, 254, 0.6)';
+                    ctx.strokeStyle = 'rgba(216, 180, 254, 0.6)'; // Soft purple virtual trace
                     ctx.setLineDash([4, 4]);
                     ctx.beginPath();
                     ctx.moveTo(hit.x, hit.y);
@@ -896,13 +908,15 @@
                 }
             }
             else if (el.type === 'glass-slab') {
-                let n1 = 1.0;
+                // Snell's Law Refraction
+                let n1 = 1.0; // Air
                 let n2 = el.refractiveIndex;
 
                 let nx = hit.normalX;
                 let ny = hit.normalY;
                 let cosI = -(ray.dx * nx + ray.dy * ny);
 
+                // If ray is exiting the medium
                 if (cosI < 0) {
                     cosI = -cosI;
                     nx = -nx;
@@ -916,34 +930,23 @@
                 const k = 1 - eta * eta * (1 - cosI * cosI);
 
                 if (k >= 0) {
+                    // Refraction occurs
                     const refrX = eta * ray.dx + (eta * cosI - Math.sqrt(k)) * nx;
                     const refrY = eta * ray.dy + (eta * cosI - Math.sqrt(k)) * ny;
 
-                    propagateRay({ 
-                        x: hit.x + refrX * EPSILON, 
-                        y: hit.y + refrY * EPSILON, 
-                        dx: refrX, 
-                        dy: refrY, 
-                        color: ray.color, 
-                        depth: ray.depth + 1 
-                    });
+                    propagateRay({ x: hit.x + refrX * EPSILON, y: hit.y + refrY * EPSILON, dx: refrX, dy: refrY, color: ray.color, depth: ray.depth + 1 });
                 } else {
+                    // Total Internal Reflection (TIR)
                     const tirX = ray.dx + 2 * cosI * nx;
                     const tirY = ray.dy + 2 * cosI * ny;
-                    propagateRay({ 
-                        x: hit.x + tirX * EPSILON, 
-                        y: hit.y + tirY * EPSILON, 
-                        dx: tirX, 
-                        dy: tirY, 
-                        color: ray.color, 
-                        depth: ray.depth + 1 
-                    });
+                    propagateRay({ x: hit.x + tirX * EPSILON, y: hit.y + tirY * EPSILON, dx: tirX, dy: tirY, color: ray.color, depth: ray.depth + 1 });
                 }
             }
             else if (el.type === 'convex-lens' || el.type === 'concave-lens') {
                 const y = hit.localY;
                 const f = el.focalLength;
-
+                
+                // Vector ray refraction using thin-lens paraxial approximation
                 const cosE = Math.cos(-el.angle);
                 const sinE = Math.sin(-el.angle);
                 const ldx = ray.dx * cosE - ray.dy * sinE;
@@ -959,15 +962,9 @@
                 const worldDx = newLdx * Math.cos(el.angle) - newLdy * Math.sin(el.angle);
                 const worldDy = newLdx * Math.sin(el.angle) + newLdy * Math.cos(el.angle);
 
-                propagateRay({ 
-                    x: hit.x + worldDx * EPSILON, 
-                    y: hit.y + worldDy * EPSILON, 
-                    dx: worldDx, 
-                    dy: worldDy, 
-                    color: ray.color, 
-                    depth: ray.depth + 1 
-                });
+                propagateRay({ x: hit.x + worldDx * EPSILON, y: hit.y + worldDy * EPSILON, dx: worldDx, dy: worldDy, color: ray.color, depth: ray.depth + 1 });
 
+                // Render virtual ray tracing for concave divergence / virtual focus
                 if (showVirtualRays) {
                     ctx.save();
                     ctx.strokeStyle = 'rgba(192, 132, 252, 0.5)';
@@ -981,6 +978,7 @@
             }
         }
 
+        // --- RENDER ELEMENTS & WORKBENCH GRID ---
         function drawGrid() {
             if (!showGrid) return;
             ctx.save();
@@ -1012,6 +1010,7 @@
                 const isSelected = selectedElement && selectedElement.id === el.id;
 
                 if (el.type === 'laser') {
+                    // Laser Launcher Body
                     ctx.fillStyle = '#1e293b';
                     ctx.strokeStyle = isSelected ? '#38bdf8' : '#475569';
                     ctx.lineWidth = 2;
@@ -1020,6 +1019,7 @@
                     ctx.fill();
                     ctx.stroke();
 
+                    // Emitter Lens nozzle
                     ctx.fillStyle = el.color;
                     ctx.beginPath();
                     ctx.arc(el.width/2, 0, 5, 0, Math.PI * 2);
@@ -1040,9 +1040,11 @@
                     ctx.fill();
 
                 } else if (el.type === 'plane-mirror') {
+                    // Mirror Backing Structure
                     ctx.fillStyle = '#334155';
                     ctx.fillRect(-el.width/2, 2, el.width, 6);
 
+                    // Reflective Surface Front
                     ctx.strokeStyle = isSelected ? '#38bdf8' : '#e2e8f0';
                     ctx.lineWidth = 3;
                     ctx.beginPath();
@@ -1050,6 +1052,7 @@
                     ctx.lineTo(el.width/2, 0);
                     ctx.stroke();
 
+                    // Hatching for non-reflecting back
                     ctx.strokeStyle = '#64748b';
                     ctx.lineWidth = 1;
                     for (let x = -el.width/2; x < el.width/2; x += 8) {
@@ -1069,10 +1072,12 @@
 
                     ctx.beginPath();
                     if (el.type === 'convex-lens') {
+                        // Curved bi-convex profile
                         ctx.moveTo(0, -hw);
                         ctx.quadraticCurveTo(hh, 0, 0, hw);
                         ctx.quadraticCurveTo(-hh, 0, 0, -hw);
                     } else {
+                        // Concave inward profile
                         ctx.moveTo(-hh, -hw);
                         ctx.lineTo(hh, -hw);
                         ctx.quadraticCurveTo(2, 0, hh, hw);
@@ -1082,8 +1087,10 @@
                     ctx.fill();
                     ctx.stroke();
 
+                    // Render Focal Points (F & 2F)
                     const f = el.focalLength;
                     ctx.fillStyle = '#f43f5e';
+                    // F1, F2
                     [-f, f, -2*f, 2*f].forEach((fp, idx) => {
                         ctx.beginPath();
                         ctx.arc(fp, 0, 3, 0, Math.PI * 2);
@@ -1105,6 +1112,7 @@
                     ctx.quadraticCurveTo(0, sagitta, hw, 0);
                     ctx.stroke();
 
+                    // Focal point
                     ctx.fillStyle = '#f43f5e';
                     ctx.beginPath();
                     ctx.arc(0, f, 3, 0, Math.PI * 2);
@@ -1121,27 +1129,23 @@
                     ctx.fill();
                     ctx.stroke();
 
+                    // Refractive Index Tag
                     ctx.fillStyle = '#a7f3d0';
                     ctx.font = '11px Fira Code';
                     ctx.textAlign = 'center';
                     ctx.fillText(`n = ${el.refractiveIndex.toFixed(2)}`, 0, 4);
 
                 } else if (el.type === 'screen') {
-                    // Rendered standing vertically along local Y-axis
-                    const screenThickness = el.height || 16;
                     ctx.fillStyle = '#334155';
-                    ctx.fillRect(-screenThickness/2, -el.width/2, screenThickness, el.width);
+                    ctx.fillRect(-el.width/2, -el.height/2, el.width, el.height);
                     ctx.strokeStyle = isSelected ? '#c084fc' : '#a855f7';
                     ctx.lineWidth = 2;
-                    ctx.strokeRect(-screenThickness/2, -el.width/2, screenThickness, el.width);
+                    ctx.strokeRect(-el.width/2, -el.height/2, el.width, el.height);
 
-                    ctx.save();
-                    ctx.rotate(-Math.PI / 2);
                     ctx.fillStyle = '#e9d5ff';
                     ctx.font = '10px Inter';
                     ctx.textAlign = 'center';
-                    ctx.fillText('SCREEN', 0, 3);
-                    ctx.restore();
+                    ctx.fillText('PROJECTION SCREEN', 0, 3);
 
                 } else if (el.type === 'ruler') {
                     ctx.fillStyle = 'rgba(251, 191, 36, 0.2)';
@@ -1150,6 +1154,7 @@
                     ctx.fillRect(-el.width/2, -el.height/2, el.width, el.height);
                     ctx.strokeRect(-el.width/2, -el.height/2, el.width, el.height);
 
+                    // Ticks
                     ctx.strokeStyle = '#fbbf24';
                     ctx.fillStyle = '#fbbf24';
                     ctx.font = '9px Fira Code';
@@ -1169,30 +1174,26 @@
                     }
                 }
 
+                // Render selection ring & rotation node
                 if (isSelected) {
-                    let selectW = el.width;
-                    let selectH = el.height || 20;
-
-                    if (el.type === 'screen') {
-                        selectW = el.height || 16;
-                        selectH = el.width;
-                    }
-
                     ctx.strokeStyle = '#38bdf8';
                     ctx.setLineDash([3, 3]);
                     ctx.lineWidth = 1;
-                    ctx.strokeRect(-selectW/2 - 8, -selectH/2 - 8, selectW + 16, selectH + 16);
+                    ctx.strokeRect(-el.width/2 - 8, -(el.height || 20)/2 - 8, el.width + 16, (el.height || 20) + 16);
                     ctx.setLineDash([]);
 
-                    const handleOffset = (el.type === 'screen' ? el.height : el.width)/2 + 25;
+                    // Rotation Handle Node
+                    const handlePos = getRotationHandlePos(el);
+                    // Local coord translation for handle
+                    const localHX = el.width/2 + 25;
                     ctx.fillStyle = '#38bdf8';
                     ctx.beginPath();
-                    ctx.arc(handleOffset, 0, 6, 0, Math.PI * 2);
+                    ctx.arc(localHX, 0, 6, 0, Math.PI * 2);
                     ctx.fill();
 
                     ctx.beginPath();
-                    ctx.moveTo(selectW/2 + 8, 0);
-                    ctx.lineTo(handleOffset, 0);
+                    ctx.moveTo(el.width/2 + 8, 0);
+                    ctx.lineTo(localHX, 0);
                     ctx.strokeStyle = '#38bdf8';
                     ctx.stroke();
                 }
@@ -1201,7 +1202,9 @@
             });
         }
 
+        // --- ANIMATION MAIN LOOP ---
         function animate(timestamp) {
+            // FPS Calculation
             frameCount++;
             if (timestamp - lastTime >= 1000) {
                 fps = frameCount;
@@ -1210,15 +1213,22 @@
                 document.getElementById('stat-fps').textContent = fps;
             }
 
+            // Clear frame
             ctx.clearRect(0, 0, width, height);
 
+            // Draw Background Grid
             drawGrid();
+
+            // Trace Light Rays & Optics
             traceRays();
+
+            // Render Physical Optics Components
             drawElements();
 
             requestAnimationFrame(animate);
         }
 
+        // Run application on window load
         window.onload = init;
     </script>
 </body>
